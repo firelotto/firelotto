@@ -1,0 +1,2 @@
+# firelotto
+International Blockchain Lottery
