@@ -147,15 +147,6 @@ contract Lottery is Ownable {
         games[gameIndex].reserve += msg.value;
     }
 
-    function transferFromReserve(uint value, address to) public onlyOwner {
-        games[gameIndex].reserve -= value;
-        to.transfer(value);
-    }
-
-    function transferFromBalance(uint value, address to) public onlyOwner {
-        to.transfer(value);
-    }
-
     function buyTicket(uint[] numbers) public payable {
         require(buyEnable);
         require(numbers.length % numbersCount == 0);
