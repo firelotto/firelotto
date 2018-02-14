@@ -31,6 +31,7 @@ contract Lottery is Ownable {
         bytes winNumbers;
         mapping(byte => bool) winNumbersMap;
         Ticket[] tickets;
+        uint checkWinTicketLevel;
         uint[][] winTicketIndices;
         uint[] winLevelAmounts;
         uint needPlayersTransfer;
@@ -47,9 +48,15 @@ contract Lottery is Ownable {
 
     mapping(address => uint[2][]) playerTickets;
 
+    mapping(address => bool) isBonusAddress;
+
     Game[] public games;
 
     uint public gameIndex;
+
+    uint public gameIndexToBuy;
+
+    uint public checkGameIndex;
 
     uint public numbersCount;
 
@@ -61,17 +68,15 @@ contract Lottery is Ownable {
 
     uint public disableBuyingTime;
 
-    uint public needToReserve;
-
     uint[] public winPercent;
 
-    address public bonusesWallet;
+    address public dividendsWallet;
 
     address public technicalWallet;
 
     address public prWallet;
 
-    uint public bonusesPercent;
+    uint public dividendsPercent;
 
     uint public technicalPercent;
 
@@ -79,7 +84,7 @@ contract Lottery is Ownable {
 
     bool public buyEnable = true;
 
-    uint public currentPrice;
+    uint public nextPrice;
 
     uint public intervalTime;
 
@@ -92,7 +97,7 @@ contract Lottery is Ownable {
     }
 
 
-    event LogTransfer(uint indexed gameIndex, uint riseAmount, uint technicalAmount, uint bonusesAmount, uint prAmount);
+    event LogTransfer(uint indexed gameIndex, uint riseAmount, uint technicalAmount, uint dividendsAmount, uint prAmount);
 
     event LogDraw(uint indexed gameIndex, uint startTime, uint bitcoinBlockIndex, bytes numbers, uint riseAmount, uint transferAmount, uint addToJackpotAmount, uint addToReserveAmount);
 
@@ -101,58 +106,79 @@ contract Lottery is Ownable {
     function Lottery() public {
 
         drawer = msg.sender;
-        bonusesWallet = msg.sender;
+        dividendsWallet = msg.sender;
         technicalWallet = msg.sender;
         prWallet = msg.sender;
 
-        bonusesPercent = 10;
+        dividendsPercent = 10;
         technicalPercent = 5;
         prPercent = 15;
 
-        disableBuyingTime = 1 minutes;
+        disableBuyingTime = 1 hours;
+        intervalTime = 6 hours;
 
-        currentPrice = 0.007 ether;
-        intervalTime = 10 minutes;
-
-        numbersCount = 4;
-        numbersCountMax = 20;
-        winPercent = [0, 0, 34, 33, 33];
-        jackpotGuaranteed = 20 ether;
-        ticketCountMax = 1000000;
-
-        /*numbersCount = 5;
-        numbersCountMax = 36;
-        winPercent = [0, 0, 25, 25, 25, 25];
-        jackpotGuaranteed = 300 ether;
-        ticketCountMax = 1000000;*/
-
-        /*numbersCount = 6;
-        numbersCountMax = 45;
-        winPercent = [0, 0, 20, 20, 20, 20, 20];
-        jackpotGuaranteed = 3000 ether;
-        ticketCountMax = 1000000;*/
+        nextPrice = 0.003 ether;
 
         games.length += 2;
 
-        games[0].startTime = 1511298000;
-        games[0].price = currentPrice;
+        numbersCount = 6;
+        numbersCountMax = 45;
+        winPercent = [0, 0, 20, 20, 20, 20, 20];
+
+        jackpotGuaranteed = 1000 ether;
+        ticketCountMax = 1000000;
+        games[0].startTime = 1514872800;
+
+        games[0].price = nextPrice;
+        games[1].price = nextPrice;
+
+        games[1].startTime = games[0].startTime + intervalTime;
+
 
     }
 
-    function startTime() public returns (uint){
+    function startTime() public view returns (uint){
         return games[gameIndex].startTime;
     }
 
-    function addReserve() public payable onlyOwner {
+    function closeTime() public view returns (uint){
+        return games[gameIndex].startTime - disableBuyingTime;
+    }
+
+    function addReserve() public payable {
+        require(checkGameIndex == gameIndex);
         games[gameIndex].reserve += msg.value;
     }
 
-    function buyTicket(uint[] numbers) public payable {
+    function addBalance() public payable {
+
+    }
+
+    function isNeedCloseCurrentGame() public view returns (bool){
+        return games[gameIndex].startTime < disableBuyingTime + now && gameIndexToBuy == gameIndex;
+    }
+
+    function closeCurrentGame(uint bitcoinBlockIndex) public onlyDrawer {
+        if (isNeedCloseCurrentGame()) {
+            games[gameIndex].bitcoinBlockIndex = bitcoinBlockIndex;
+            gameIndexToBuy = gameIndex + 1;
+        }
+    }
+
+    function() public payable {
+        uint[] memory numbers = new uint [](msg.data.length);
+
+        for (uint i = 0; i < msg.data.length; i++) {
+            numbers[i] = uint((msg.data[i] >> 4) & 0xF) * 10 + uint(msg.data[i] & 0xF);
+        }
+        buyTicket(numbers, address(0));
+    }
+
+    function buyTicket(uint[] numbers, address bonusAddress) public payable {
         require(buyEnable);
         require(numbers.length % numbersCount == 0);
 
-        uint ticketGameIndex = game.startTime - now < disableBuyingTime ? gameIndex + 1 : gameIndex;
-        Game storage game = games[ticketGameIndex];
+        Game storage game = games[gameIndexToBuy];
 
         uint buyTicketCount = numbers.length / numbersCount;
         require(msg.value == game.price * buyTicketCount);
@@ -169,20 +195,28 @@ contract Lottery is Ownable {
 
             require(noDuplicates(bet));
 
-            playerTickets[msg.sender].push([ticketGameIndex, game.tickets.length]);
+            playerTickets[msg.sender].push([gameIndexToBuy, game.tickets.length]);
 
             game.tickets.push(Ticket(msg.sender, bet));
+
+        }
+
+        if (isBonusAddress[bonusAddress]) {
+            bonusAddress.transfer(msg.value * prPercent / 100);
+        } else {
+            prWallet.transfer(msg.value * prPercent / 100);
         }
     }
 
     function getPlayerTickets(address player, uint offset, uint count) public view returns (int [] tickets){
         uint[2][] storage list = playerTickets[player];
+        if (offset >= list.length) return tickets;
 
         uint k;
         uint n = offset + count;
         if (n > list.length) n = list.length;
 
-        tickets = new int [](n * (numbersCount + 5));
+        tickets = new int []((n - offset) * (numbersCount + 5));
 
         for (uint i = offset; i < n; i++) {
             var info = list[list.length - i - 1];
@@ -218,11 +252,12 @@ contract Lottery is Ownable {
     }
 
     function getGames(uint offset, uint count) public view returns (uint [] res){
+        if (offset > gameIndex) return res;
+
         uint k;
         uint n = offset + count;
-        if (n > gameIndex) n = gameIndex;
-        n++;
-        res = new uint [](n * (numbersCount + 10));
+        if (n > gameIndex + 1) n = gameIndex + 1;
+        res = new uint []((n - offset) * (numbersCount + 10));
 
         for (uint i = offset; i < n; i++) {
             uint gi = gameIndex - i;
@@ -255,14 +290,13 @@ contract Lottery is Ownable {
         Game storage game = games[gameIndex];
         uint k;
         uint n = offset + count;
-        n++;
         uint[] memory res = new uint [](count * 4);
 
         uint currentIndex;
 
         for (uint level = numbersCount; level > 1; level--) {
             for (uint indexInlevel = 0; indexInlevel < game.winTicketIndices[level].length; indexInlevel++) {
-                if (offset <= currentIndex && currentIndex < count) {
+                if (offset <= currentIndex && currentIndex < n) {
                     uint ticketIndex = game.winTicketIndices[level][indexInlevel];
                     Ticket storage ticket = game.tickets[ticketIndex];
                     res[k++] = uint(ticket.user);
@@ -270,11 +304,12 @@ contract Lottery is Ownable {
                     res[k++] = ticketIndex;
                     res[k++] = game.winLevelAmounts[level];
 
-                }else if(currentIndex >= count){
+                } else if (currentIndex >= n) {
                     wins = new uint[](k);
                     for (uint i = 0; i < k; i++) {
                         wins[i] = res[i];
                     }
+                    return wins;
                 }
                 currentIndex++;
             }
@@ -283,7 +318,6 @@ contract Lottery is Ownable {
         for (i = 0; i < k; i++) {
             wins[i] = res[i];
         }
-        return;
     }
 
     function noDuplicates(bytes array) public pure returns (bool){
@@ -296,7 +330,7 @@ contract Lottery is Ownable {
     }
 
     function getWinNumbers(string bitcoinBlockHash, uint numbersCount, uint numbersCountMax) public pure returns (bytes){
-        bytes memory random = bytes(bitcoinBlockHash);
+        bytes32 random = keccak256(bitcoinBlockHash);
         bytes memory allNumbers = new bytes(numbersCountMax);
         bytes memory winNumbers = new bytes(numbersCount);
 
@@ -317,10 +351,15 @@ contract Lottery is Ownable {
         return winNumbers;
     }
 
+    function isNeedDrawGame(uint bitcoinBlockIndex) public view returns (bool){
+        Game storage game = games[gameIndex];
+        return bitcoinBlockIndex > game.bitcoinBlockIndex && game.bitcoinBlockIndex > 0 && now >= game.startTime;
+    }
+
     function drawGame(uint bitcoinBlockIndex, string bitcoinBlockHash) public onlyDrawer {
         Game storage game = games[gameIndex];
 
-        require(int(game.startTime - now) < 1 minutes);
+        require(isNeedDrawGame(bitcoinBlockIndex));
 
         game.bitcoinBlockIndex = bitcoinBlockIndex;
         game.bitcoinBlockHash = bitcoinBlockHash;
@@ -336,28 +375,26 @@ contract Lottery is Ownable {
         uint riseAmount = game.tickets.length * game.price;
 
         uint technicalAmount = riseAmount * technicalPercent / 100;
-        uint bonusesAmount = riseAmount * bonusesPercent / 100;
+        uint dividendsAmount = riseAmount * dividendsPercent / 100;
         uint prAmount = riseAmount * prPercent / 100;
 
         technicalWallet.transfer(technicalAmount);
-        bonusesWallet.transfer(bonusesAmount);
-        prWallet.transfer(prAmount);
+        dividendsWallet.transfer(dividendsAmount);
 
-        LogTransfer(gameIndex, riseAmount, technicalAmount, bonusesAmount, prAmount);
+        LogTransfer(gameIndex, riseAmount, technicalAmount, dividendsAmount, prAmount);
 
         games.length++;
 
         gameIndex++;
-        games[gameIndex].startTime = game.startTime + intervalTime;
-        games[gameIndex].price = currentPrice;
+        games[gameIndex + 1].startTime = games[gameIndex].startTime + intervalTime;
+        games[gameIndex + 1].price = nextPrice;
 
-        checkTickets();
     }
 
     function calcWins(Game storage game) private {
         game.checkWinTicketLevel = numbersCount;
 
-        uint riseAmount = game.tickets.length * game.price * (100 - technicalPercent - bonusesPercent - prPercent) / 100;
+        uint riseAmount = game.tickets.length * game.price * (100 - technicalPercent - dividendsPercent - prPercent) / 100;
 
         uint freeAmount = 0;
 
@@ -386,7 +423,6 @@ contract Lottery is Ownable {
 
                 reserve -= fromReserve;
                 jackpot += fromReserve;
-                needToReserve += fromReserve;
 
                 LogReserveUsed(checkGameIndex, fromReserve);
             }
@@ -397,22 +433,14 @@ contract Lottery is Ownable {
             jackpot = 0;
         }
 
-        if (needToReserve > 0) {
-            if (needToReserve < freeAmount) {
-                game.addToReserveAmount = needToReserve;
-                freeAmount -= needToReserve;
-                game.addToJackpotAmount = freeAmount;
-            }
-            else {
-                game.addToReserveAmount = needToReserve;
-            }
-        }
-        else {
+        if (reserve < jackpotGuaranteed) {
+            game.addToReserveAmount = freeAmount;
+        } else {
             game.addToJackpotAmount = freeAmount;
         }
 
-        games[checkGameIndex + 1].jackpot = jackpot + game.addToJackpotAmount;
-        games[checkGameIndex + 1].reserve = reserve + game.addToReserveAmount;
+        games[checkGameIndex + 1].jackpot += jackpot + game.addToJackpotAmount;
+        games[checkGameIndex + 1].reserve += reserve + game.addToReserveAmount;
 
     }
 
@@ -420,6 +448,10 @@ contract Lottery is Ownable {
         for (uint i = 0; i < numbers.length; i++) {
             if (game.winNumbersMap[numbers[i]]) count++;
         }
+    }
+
+    function setJackpotGuaranteed(uint _jackpotGuaranteed) public onlyOwner {
+        jackpotGuaranteed = _jackpotGuaranteed;
     }
 
 }
